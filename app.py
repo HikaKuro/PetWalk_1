@@ -87,13 +87,6 @@ def _wmo_to_label_icon(code: int):
         return ("雷雨", "⛈️")
     return ("不明", "❓")
 
-import os, time
-from core.store import DB_PATH
-bak = f"{DB_PATH}.bak_{int(time.time())}"
-if os.path.exists(DB_PATH):
-    os.replace(DB_PATH, bak)  # 退避
-# 以降は _ensure()/load_user_settings が新規にテーブルを作る
-st.warning(f"DB を初期化しました。バックアップ: {bak}")
 
 st.set_page_config(page_title="PetWalk+ MVP", layout="wide")
 
