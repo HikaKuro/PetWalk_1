@@ -140,12 +140,12 @@ if "last_plan" not in st.session_state:
 with TAB1:
     st.subheader("散歩の時間帯 & ルートをおすすめします")
     # import core.store as store
-    with store._connect() as _c:
-        tables = [r["name"] for r in _c.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-        cols = [dict(r) for r in _c.execute("PRAGMA table_info(user_settings)")]
-    st.caption(f"DB_PATH = {store.DB_PATH}")
-    st.caption(f"Tables = {tables}")
-    st.caption(f"user_settings columns = {cols}")
+    # with store._connect() as _c:
+    #     tables = [r["name"] for r in _c.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+    #     cols = [dict(r) for r in _c.execute("PRAGMA table_info(user_settings)")]
+    # st.caption(f"DB_PATH = {store.DB_PATH}")
+    # st.caption(f"Tables = {tables}")
+    # st.caption(f"user_settings columns = {cols}")
     # --- Session 初期化 ---
     ss = st.session_state
     ss.setdefault("latlon", None)         # (lat, lon)
