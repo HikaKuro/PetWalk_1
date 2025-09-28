@@ -108,14 +108,62 @@ def _ensure() -> None:
         con.execute("CREATE INDEX IF NOT EXISTS idx_reco_user_time ON walk_reco_log(user_id, created_at DESC)")
 
 # ---------- user settings ----------
+# core/store.py
+
 def load_user_settings(user_id: str) -> Dict[str, Any]:
     _ensure()
     with _connect() as con:
+        # 1) テーブル存在 & 列構成チェック
+        cols = {r["name"] for r in con.execute("PRAGMA table_info(user_settings)").fetchall()}
+        if not cols:
+            # テーブル自体が無い → 生成
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS user_settings(
+                  user_id    TEXT PRIMARY KEY,
+                  payload    TEXT NOT NULL,
+                  updated_at INTEGER NOT NULL
+                )
+            """)
+            return {}
+
+        if "payload" not in cols:
+            # 旧式(uid/key/value/recorded_at)ならその場で移行、その他ならリセット
+            if {"uid", "key", "value"}.issubset(cols):
+                con.execute("BEGIN IMMEDIATE")
+                try:
+                    _migrate_user_settings(con)
+                    con.execute("COMMIT")
+                except Exception:
+                    con.execute("ROLLBACK")
+                    # 最低限、空の新スキーマを用意して先に進む
+                    con.execute("DROP TABLE IF EXISTS user_settings")
+                    con.execute("""
+                        CREATE TABLE user_settings(
+                          user_id    TEXT PRIMARY KEY,
+                          payload    TEXT NOT NULL,
+                          updated_at INTEGER NOT NULL
+                        )
+                    """)
+                    return {}
+            else:
+                # 想定外スキーマ → 作り直し（データ温存の必要があればここでバックアップ運用に変更）
+                con.execute("DROP TABLE IF EXISTS user_settings")
+                con.execute("""
+                    CREATE TABLE user_settings(
+                      user_id    TEXT PRIMARY KEY,
+                      payload    TEXT NOT NULL,
+                      updated_at INTEGER NOT NULL
+                    )
+                """)
+                return {}
+
+        # 2) ここまで来たら payload で読み出せるはず
         row = con.execute(
             "SELECT payload FROM user_settings WHERE user_id=?",
             (user_id,)
         ).fetchone()
         return json.loads(row["payload"]) if row else {}
+
 
 def save_user_settings(user_id: str, payload: Dict[str, Any]) -> None:
     _ensure()

@@ -87,6 +87,13 @@ def _wmo_to_label_icon(code: int):
         return ("雷雨", "⛈️")
     return ("不明", "❓")
 
+import os, time
+from core.store import DB_PATH
+bak = f"{DB_PATH}.bak_{int(time.time())}"
+if os.path.exists(DB_PATH):
+    os.replace(DB_PATH, bak)  # 退避
+# 以降は _ensure()/load_user_settings が新規にテーブルを作る
+st.warning(f"DB を初期化しました。バックアップ: {bak}")
 
 st.set_page_config(page_title="PetWalk+ MVP", layout="wide")
 
@@ -140,9 +147,12 @@ if "last_plan" not in st.session_state:
 with TAB1:
     st.subheader("散歩の時間帯 & ルートをおすすめします")
     # import core.store as store
+    with store._connect() as _c:
+        tables = [r["name"] for r in _c.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+        cols = [dict(r) for r in _c.execute("PRAGMA table_info(user_settings)")]
     st.caption(f"DB_PATH = {store.DB_PATH}")
-    prefs = load_user_settings(uid)
-    st.caption(f"設定keys: {list(prefs.keys())}") 
+    st.caption(f"Tables = {tables}")
+    st.caption(f"user_settings columns = {cols}")
     # --- Session 初期化 ---
     ss = st.session_state
     ss.setdefault("latlon", None)         # (lat, lon)
