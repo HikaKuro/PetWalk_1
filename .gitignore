@@ -1,19 +1,20 @@
 # Python
 __pycache__/
-*.py[cod]
-*.egg-info/
-
-# venv
+*.pyc
+*.pyo
+*.pyd
 .venv/
+env/
+venv/
 
-# local DB / cache
-*.db
-*.sqlite3
-
-# Streamlit
+# Streamlit local secrets（本物の鍵は絶対コミットしない）
 .streamlit/secrets.toml
 
-# OS / IDE
+# SQLiteや一時ファイル
+*.db
+assets/qr/*.png
+
+# OS / Editor
 .DS_Store
 Thumbs.db
 .vscode/

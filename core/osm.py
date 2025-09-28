@@ -26,7 +26,10 @@ def get_pois(lat: float, lon: float, radius_m: int = 800):
     pois = []
     for el in js.get("elements", []):
         tags = el.get("tags", {})
-        name = tags.get("name") or tags.get("ref") or "POI"
+        name = tags.get("name") or tags.get("ref")
+        if not name:
+            k = tags.get("leisure") or tags.get("highway")
+            name = {"park": "公園", "footway": "遊歩道", "path": "小道"}.get(k, "目的地")
         if "center" in el:
             lat2, lon2 = el["center"]["lat"], el["center"]["lon"]
         else:
