@@ -3,40 +3,62 @@ from __future__ import annotations
 import os, sqlite3, json, time
 from typing import Any, Dict, List, Tuple, Optional
 
-# 置換案（安全版）
+# --- DB path ---
 DATA_DIR = "/mount/data" if os.path.isdir("/mount/data") else "."
 DB_PATH = os.getenv("PETWALK_DB_PATH", os.path.join(DATA_DIR, "petwalk_mvp.db"))
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
-def _conn() -> sqlite3.Connection:
-    con = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+# --- low-level connect ---
+def _connect() -> sqlite3.Connection:
+    con = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys=ON;")
-    con.execute("PRAGMA journal_mode=WAL;")
-    return con
-
-def _connect():
-    con = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
     con.execute("PRAGMA journal_mode=WAL;")
     con.execute("PRAGMA synchronous=NORMAL;")
     return con
 
-def _ensure():
+# --- ensure & migrate schema ---
+def _ensure() -> None:
     with _connect() as con:
-        # 安全系PRAGMA（書き込み競合に少し強く）
-        con.execute("PRAGMA journal_mode=WAL;")
-        con.execute("PRAGMA synchronous=NORMAL;")
+        # user_settings の存在と列構成を確認
+        cols = {r["name"] for r in con.execute("PRAGMA table_info(user_settings)").fetchall()}
 
-        # user_settings（updated_at必須）
-        con.execute("""
+        if not cols:
+            # 新スキーマを作成（user_id/payload/updated_at）
+            con.execute("""
             CREATE TABLE IF NOT EXISTS user_settings(
               user_id    TEXT PRIMARY KEY,
               payload    TEXT NOT NULL,
               updated_at INTEGER NOT NULL
-            )
-        """)
-        # 既存DBで updated_at が無い場合は後付け
-        cols = {r[1] for r in con.execute("PRAGMA table_info(user_settings)")}
+            )""")
+        elif {"uid", "key", "value", "recorded_at"}.issubset(cols) and "payload" not in cols:
+            # 旧スキーマ(uid/key/value/recorded_at) → 新スキーマへマイグレーション
+            con.execute("BEGIN")
+            con.execute("""
+            CREATE TABLE IF NOT EXISTS __user_settings_new(
+              user_id    TEXT PRIMARY KEY,
+              payload    TEXT NOT NULL,
+              updated_at INTEGER NOT NULL
+            )""")
+
+            tmp: Dict[str, Dict[str, Any]] = {}
+            for r in con.execute("SELECT uid, key, value FROM user_settings").fetchall():
+                uid, k, v = r["uid"], r["key"], r["value"]
+                tmp.setdefault(uid, {})[k] = v
+
+            now = int(time.time())
+            for uid, d in tmp.items():
+                con.execute(
+                    "INSERT OR REPLACE INTO __user_settings_new(user_id, payload, updated_at) VALUES(?,?,?)",
+                    (uid, json.dumps(d, ensure_ascii=False), now)
+                )
+
+            con.execute("DROP TABLE user_settings")
+            con.execute("ALTER TABLE __user_settings_new RENAME TO user_settings")
+            con.execute("COMMIT")
+
+        # 安全のため updated_at が無い場合は追加（古い中間版ケア）
+        cols = {r["name"] for r in con.execute("PRAGMA table_info(user_settings)").fetchall()}
         if "updated_at" not in cols:
             con.execute("ALTER TABLE user_settings ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0")
 
@@ -71,52 +93,18 @@ def _ensure():
         """)
         con.execute("CREATE INDEX IF NOT EXISTS idx_reco_user_time ON walk_reco_log(user_id, created_at DESC)")
 
-# def _ensure():
-#     with _conn() as con:
-#         con.execute("""
-#         CREATE TABLE IF NOT EXISTS user_settings(
-#           user_id   TEXT PRIMARY KEY,
-#           payload   TEXT NOT NULL,
-#           updated_at INTEGER NOT NULL
-#         )""")
-#         con.execute("""
-#         CREATE TABLE IF NOT EXISTS user_location_log(
-#           id INTEGER PRIMARY KEY AUTOINCREMENT,
-#           user_id   TEXT NOT NULL,
-#           lat       REAL NOT NULL,
-#           lon       REAL NOT NULL,
-#           address   TEXT,
-#           accuracy  REAL,
-#           source    TEXT,
-#           recorded_at INTEGER NOT NULL
-#         )""")
-#         con.execute("CREATE INDEX IF NOT EXISTS idx_loc_user_time ON user_location_log(user_id, recorded_at DESC)")
-#         con.execute("""
-#         CREATE TABLE IF NOT EXISTS walk_reco_log(
-#           id INTEGER PRIMARY KEY AUTOINCREMENT,
-#           user_id     TEXT NOT NULL,
-#           origin_lat  REAL,
-#           origin_lon  REAL,
-#           params_json TEXT NOT NULL,
-#           result_json TEXT NOT NULL,
-#           routes_json TEXT,
-#           model_version TEXT,
-#           created_at  INTEGER NOT NULL
-#         )""")
-#         con.execute("CREATE INDEX IF NOT EXISTS idx_reco_user_time ON walk_reco_log(user_id, created_at DESC)")
-
 # ---------- user settings ----------
 def load_user_settings(user_id: str) -> Dict[str, Any]:
     _ensure()
-    with _conn() as con:
+    with _connect() as con:
         row = con.execute("SELECT payload FROM user_settings WHERE user_id=?", (user_id,)).fetchone()
-    return json.loads(row["payload"]) if row else {}
+        return json.loads(row["payload"]) if row else {}
 
 def save_user_settings(user_id: str, payload: Dict[str, Any]) -> None:
     _ensure()
     now = int(time.time())
     blob = json.dumps(payload, ensure_ascii=False)
-    with _conn() as con:
+    with _connect() as con:
         con.execute("""
             INSERT INTO user_settings(user_id, payload, updated_at)
             VALUES(?, ?, ?)
@@ -127,7 +115,7 @@ def save_user_settings(user_id: str, payload: Dict[str, Any]) -> None:
 def add_location(user_id: str, lat: float, lon: float,
                  address: Optional[str]=None, accuracy: Optional[float]=None, source: Optional[str]=None) -> None:
     _ensure()
-    with _conn() as con:
+    with _connect() as con:
         con.execute("""
             INSERT INTO user_location_log(user_id, lat, lon, address, accuracy, source, recorded_at)
             VALUES(?, ?, ?, ?, ?, ?, ?)
@@ -135,7 +123,7 @@ def add_location(user_id: str, lat: float, lon: float,
 
 def list_locations(user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
     _ensure()
-    with _conn() as con:
+    with _connect() as con:
         cur = con.execute("""
             SELECT id, lat, lon, address, accuracy, source, recorded_at
             FROM user_location_log
@@ -149,7 +137,7 @@ def add_reco(user_id: str, origin: Tuple[Optional[float], Optional[float]],
              routes: Optional[Any]=None, model_version: str="v1") -> None:
     _ensure()
     o_lat, o_lon = origin or (None, None)
-    with _conn() as con:
+    with _connect() as con:
         con.execute("""
             INSERT INTO walk_reco_log(user_id, origin_lat, origin_lon, params_json, result_json, routes_json, model_version, created_at)
             VALUES(?, ?, ?, ?, ?, ?, ?, ?)
@@ -166,7 +154,7 @@ def add_reco(user_id: str, origin: Tuple[Optional[float], Optional[float]],
 
 def list_recos(user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
     _ensure()
-    with _conn() as con:
+    with _connect() as con:
         cur = con.execute("""
             SELECT id, origin_lat, origin_lon, params_json, result_json, routes_json, model_version, created_at
             FROM walk_reco_log
@@ -187,13 +175,14 @@ def list_recos(user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
 
 def get_reco(user_id: str, reco_id: int) -> Optional[Dict[str, Any]]:
     _ensure()
-    with _conn() as con:
+    with _connect() as con:
         r = con.execute("""
             SELECT id, origin_lat, origin_lon, params_json, result_json, routes_json, model_version, created_at
             FROM walk_reco_log
             WHERE user_id=? AND id=?
         """, (user_id, reco_id)).fetchone()
-    if not r: return None
+    if not r:
+        return None
     return {
         "id": r["id"],
         "origin": (r["origin_lat"], r["origin_lon"]),

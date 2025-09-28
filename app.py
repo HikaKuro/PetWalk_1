@@ -10,6 +10,8 @@ from core.store import (
     add_location, list_locations,
     add_reco, list_recos, get_reco
 )
+import core.store as store
+
 
 from core.weather import get_hourly_weather
 from core.geocode import geocode_address
@@ -136,7 +138,11 @@ if "last_plan" not in st.session_state:
     st.session_state.last_plan = None  
 
 with TAB1:
-    st.subheader("散歩の時間帯 & ルートをおすすめします") 
+    st.subheader("散歩の時間帯 & ルートをおすすめします")
+    # import core.store as store
+    st.caption(f"DB: {store.DB_PATH}")
+    prefs = load_user_settings(uid)
+    st.caption(f"設定keys: {list(prefs.keys())}") 
     # --- Session 初期化 ---
     ss = st.session_state
     ss.setdefault("latlon", None)         # (lat, lon)
