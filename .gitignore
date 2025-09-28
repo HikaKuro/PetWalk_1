@@ -1,21 +1,58 @@
-# Python
+# --- Python 基本 ---
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+.cache/
+.mypy_cache/
+.pytype/
+.pytest_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+
+# --- 仮想環境 ---
 .venv/
-env/
 venv/
+env/
 
-# Streamlit local secrets（本物の鍵は絶対コミットしない）
-.streamlit/secrets.toml
-
-# SQLiteや一時ファイル
-*.db
-assets/qr/*.png
-
-# OS / Editor
+# --- OS / エディタ ---
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+*.code-workspace
+
+# --- Streamlit ---
+# Secrets は必ずクラウド側の Secrets に入れる
+.streamlit/secrets.toml
+
+# --- 実行時データ（DB/一時ファイル） ---
+*.db
+*.db-*
+*.sqlite*
+/mount/data/
+/mount/tmp/
+
+# --- 生成画像・キャッシュ（QRなどは実行時生成にする） ---
+assets/qr/**
+!assets/qr/.gitkeep
+
+# --- RAG 生成物（インデックス等） ---
+rag/data/**
+rag/index/**
+rag/chroma/**
+rag/**/tmp/**
+# ingest のスクリプトなどは残す想定（ファイルは通常通り追跡）
+
+# --- ログ ---
+logs/
+*.log
+
+# --- Jupyter ---
+.ipynb_checkpoints/
