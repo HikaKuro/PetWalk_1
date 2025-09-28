@@ -140,7 +140,7 @@ if "last_plan" not in st.session_state:
 with TAB1:
     st.subheader("散歩の時間帯 & ルートをおすすめします")
     # import core.store as store
-    st.caption(f"DB: {store.DB_PATH}")
+    st.caption(f"DB_PATH = {store.DB_PATH}")
     prefs = load_user_settings(uid)
     st.caption(f"設定keys: {list(prefs.keys())}") 
     # --- Session 初期化 ---
