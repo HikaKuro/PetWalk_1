@@ -3,7 +3,10 @@ from __future__ import annotations
 import os, sqlite3, json, time
 from typing import Any, Dict, List, Tuple, Optional
 
-DB_PATH = os.getenv("PETWALK_DB_PATH", "petwalk_mvp.db")
+# 置換案（安全版）
+DATA_DIR = "/mount/data" if os.path.isdir("/mount/data") else "."
+DB_PATH = os.getenv("PETWALK_DB_PATH", os.path.join(DATA_DIR, "petwalk_mvp.db"))
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 def _conn() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
