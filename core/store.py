@@ -15,39 +15,95 @@ def _conn() -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL;")
     return con
 
+def _connect():
+    con = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
+    con.execute("PRAGMA journal_mode=WAL;")
+    con.execute("PRAGMA synchronous=NORMAL;")
+    return con
+
 def _ensure():
-    with _conn() as con:
+    with _connect() as con:
+        # 安全系PRAGMA（書き込み競合に少し強く）
+        con.execute("PRAGMA journal_mode=WAL;")
+        con.execute("PRAGMA synchronous=NORMAL;")
+
+        # user_settings（updated_at必須）
         con.execute("""
-        CREATE TABLE IF NOT EXISTS user_settings(
-          user_id   TEXT PRIMARY KEY,
-          payload   TEXT NOT NULL,
-          updated_at INTEGER NOT NULL
-        )""")
+            CREATE TABLE IF NOT EXISTS user_settings(
+              user_id    TEXT PRIMARY KEY,
+              payload    TEXT NOT NULL,
+              updated_at INTEGER NOT NULL
+            )
+        """)
+        # 既存DBで updated_at が無い場合は後付け
+        cols = {r[1] for r in con.execute("PRAGMA table_info(user_settings)")}
+        if "updated_at" not in cols:
+            con.execute("ALTER TABLE user_settings ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0")
+
+        # 位置ログ
         con.execute("""
-        CREATE TABLE IF NOT EXISTS user_location_log(
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id   TEXT NOT NULL,
-          lat       REAL NOT NULL,
-          lon       REAL NOT NULL,
-          address   TEXT,
-          accuracy  REAL,
-          source    TEXT,
-          recorded_at INTEGER NOT NULL
-        )""")
+            CREATE TABLE IF NOT EXISTS user_location_log(
+              id          INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id     TEXT NOT NULL,
+              lat         REAL NOT NULL,
+              lon         REAL NOT NULL,
+              address     TEXT,
+              accuracy    REAL,
+              source      TEXT,
+              recorded_at INTEGER NOT NULL
+            )
+        """)
         con.execute("CREATE INDEX IF NOT EXISTS idx_loc_user_time ON user_location_log(user_id, recorded_at DESC)")
+
+        # レコメンドログ
         con.execute("""
-        CREATE TABLE IF NOT EXISTS walk_reco_log(
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id     TEXT NOT NULL,
-          origin_lat  REAL,
-          origin_lon  REAL,
-          params_json TEXT NOT NULL,
-          result_json TEXT NOT NULL,
-          routes_json TEXT,
-          model_version TEXT,
-          created_at  INTEGER NOT NULL
-        )""")
+            CREATE TABLE IF NOT EXISTS walk_reco_log(
+              id            INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id       TEXT NOT NULL,
+              origin_lat    REAL,
+              origin_lon    REAL,
+              params_json   TEXT NOT NULL,
+              result_json   TEXT NOT NULL,
+              routes_json   TEXT,
+              model_version TEXT,
+              created_at    INTEGER NOT NULL
+            )
+        """)
         con.execute("CREATE INDEX IF NOT EXISTS idx_reco_user_time ON walk_reco_log(user_id, created_at DESC)")
+
+# def _ensure():
+#     with _conn() as con:
+#         con.execute("""
+#         CREATE TABLE IF NOT EXISTS user_settings(
+#           user_id   TEXT PRIMARY KEY,
+#           payload   TEXT NOT NULL,
+#           updated_at INTEGER NOT NULL
+#         )""")
+#         con.execute("""
+#         CREATE TABLE IF NOT EXISTS user_location_log(
+#           id INTEGER PRIMARY KEY AUTOINCREMENT,
+#           user_id   TEXT NOT NULL,
+#           lat       REAL NOT NULL,
+#           lon       REAL NOT NULL,
+#           address   TEXT,
+#           accuracy  REAL,
+#           source    TEXT,
+#           recorded_at INTEGER NOT NULL
+#         )""")
+#         con.execute("CREATE INDEX IF NOT EXISTS idx_loc_user_time ON user_location_log(user_id, recorded_at DESC)")
+#         con.execute("""
+#         CREATE TABLE IF NOT EXISTS walk_reco_log(
+#           id INTEGER PRIMARY KEY AUTOINCREMENT,
+#           user_id     TEXT NOT NULL,
+#           origin_lat  REAL,
+#           origin_lon  REAL,
+#           params_json TEXT NOT NULL,
+#           result_json TEXT NOT NULL,
+#           routes_json TEXT,
+#           model_version TEXT,
+#           created_at  INTEGER NOT NULL
+#         )""")
+#         con.execute("CREATE INDEX IF NOT EXISTS idx_reco_user_time ON walk_reco_log(user_id, created_at DESC)")
 
 # ---------- user settings ----------
 def load_user_settings(user_id: str) -> Dict[str, Any]:
