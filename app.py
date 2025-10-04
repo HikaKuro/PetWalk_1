@@ -14,6 +14,7 @@ import core.store as store
 
 
 from core.weather import get_hourly_weather
+from core.ai_agent import run_recommend  # 追加
 from core.geocode import geocode_address
 from core.osm import get_pois
 from core.routing import route_walking
@@ -22,6 +23,7 @@ from core.coupon import issue_coupon_qr
 from core.db import DB
 from core.recommend import SIZE_THRESH  # ファイル冒頭でのimportにまとめてもOK
 
+
 # --- Cookie 管理（パスワードは Secrets へ） ---
 COOKIES = EncryptedCookieManager(
     prefix="petwalk_",
@@ -29,6 +31,13 @@ COOKIES = EncryptedCookieManager(
 )
 if not COOKIES.ready():  # 初回だけ Cookie 初期化で1回止まる
     st.stop()
+
+if "OPENAI_API_KEY" in st.secrets:
+    os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+if "ORS_API_KEY" in st.secrets:
+    os.environ["ORS_API_KEY"] = st.secrets["ORS_API_KEY"]
+
+
 
 def get_user_id() -> str:
     if "uid" in COOKIES:
@@ -108,7 +117,7 @@ with st.sidebar:
     address_txt = st.sidebar.text_input("住所（任意）", key="address_txt")
     # ほかにもサイドバー項目があれば同様に key を付ける
 
-    if st.sidebar.button("設定を保存する", use_container_width=True):
+    if st.sidebar.button("設定を保存する", width="stretch"):
         payload = {
             "dog_size": st.session_state.get("dog_size"),
             "dog_breed": st.session_state.get("dog_breed"),
@@ -139,14 +148,9 @@ if "last_plan" not in st.session_state:
 
 with TAB1:
     st.subheader("散歩の時間帯 & ルートをおすすめします")
-    # import core.store as store
-    # with store._connect() as _c:
-    #     tables = [r["name"] for r in _c.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-    #     cols = [dict(r) for r in _c.execute("PRAGMA table_info(user_settings)")]
-    # st.caption(f"DB_PATH = {store.DB_PATH}")
-    # st.caption(f"Tables = {tables}")
-    # st.caption(f"user_settings columns = {cols}")
-    # --- Session 初期化 ---
+    # app.py のどこか（デバッグ用、問題なければ消してOK）
+    k = st.secrets.get("OPENAI_API_KEY")
+
     ss = st.session_state
     ss.setdefault("latlon", None)         # (lat, lon)
     ss.setdefault("getloc_mode", False)   # 現在地取得モード（ボタン押下後だけ有効）
@@ -158,7 +162,7 @@ with TAB1:
 
         if mode == "📍 現在地を使う":
             # 1) ボタンで取得モードに入る（次回以降の再実行でもコンポーネントを継続表示）
-            if st.button("📍 現在地を取得", type="primary", use_container_width=True,
+            if st.button("📍 現在地を取得", type="primary", width="stretch",
                          help="ブラウザの位置情報アクセスを『許可』してください"):
                 ss.getloc_mode = True
 
@@ -177,7 +181,7 @@ with TAB1:
         else:
             # 住所入力ルート（address_txt は使わず、この場で完結）
             addr = st.text_input("住所・ランドマーク・駅名を入力")
-            set_by_addr = st.button("🔎 住所から位置を設定", use_container_width=True, disabled=(not addr))
+            set_by_addr = st.button("🔎 住所から位置を設定", width="stretch", disabled=(not addr))
             if set_by_addr and addr:
                 ge = geocode_address(addr)  # 戻り: {"lat": .., "lon": ..} を想定
                 if ge:
@@ -188,13 +192,39 @@ with TAB1:
                     st.error("住所から位置を取得できませんでした。表記を変えて再試行してください。")
 
     colA, colB = st.columns([2, 1])
+    use_langchain = True  # LangChain を使う。オフにしたら従来ロジックのみ
+
     with colA:
-        go = st.button("おすすめ開始", type="primary", use_container_width=True)
+        go = st.button("おすすめ開始", type="primary", width="stretch")
     with colB:
         radius = st.slider("探索半径(m)", 300, 2000, 800, 100)
 
+    if use_langchain and go and (lat is not None) and (lon is not None):
+        with st.spinner("AIでおすすめを算出中…"):
+            try:
+                out = run_recommend(
+                    lat=lat, lon=lon,
+                    dog_size=dog_size, age_years=age_years, weight_kg=weight_kg,
+                    radius_m=radius, max_routes=3, model="gpt-4o-mini"
+                )
+                rows = list(out.time_windows)
+                if rows:
+                    rows[0]["時間帯"] = "◎ " + rows[0]["時間帯"]
+                    st.dataframe(rows, width="stretch")
+
+                # ルート候補をセッションへ
+                ss.routes = out.routes
+                ss.selected_route_idx = 0
+                ss.summary = out.summary         # ★ 画面下部で使う
+                ss.windows = out.time_windows    # ★ 保存ボタンで使う（従来互換でOK）
+
+            except Exception as e:
+                st.warning(f"LangChain失敗 → 従来ロジックにフォールバック: {str(e)[:200]}")
+                use_langchain = False
+
+
     # --- 計算（ボタン押下時のみ再計算） ---
-    if go and (lat is not None) and (lon is not None):
+    if (not use_langchain) and go and (lat is not None) and (lon is not None):
         with st.spinner("おすすめを算出中…"):
             try:
                 # 1) 天気（48h）
@@ -217,6 +247,28 @@ with TAB1:
                     MAX_ROUTES = 3            # ★ 追加：上限3件
                     routes = []
 
+                    def _poi_label_kind(p):
+                            k = (p.get("kind") or "").lower()
+                            name = p.get("name") or "目的地"
+                            if any(s in k for s in ["park", "garden", "green", "playground"]):
+                                tag = "公園系"
+                            elif any(s in k for s in ["river", "water", "pond", "lake"]):
+                                tag = "水辺"
+                            elif any(s in k for s in ["footway", "trail", "path"]):
+                                tag = "遊歩道"
+                            elif any(s in k for s in ["shrine", "temple"]):
+                                tag = "神社仏閣"
+                            else:
+                                tag = "市街地"
+                            return f"{name}（{tag}）"
+
+                    def _dist_note(m):
+                            one_way_min = max(1, int(round((m/1000.0) / 4.0 * 60)))  # 時速4km換算
+                            if m < 600: cat = "短め"
+                            elif m < 1600: cat = "中距離"
+                            else: cat = "やや長め"
+                            return one_way_min, cat
+                    
                     for p in pois:
                         r = route_walking((lat, lon), (p["lat"], p["lon"]))  # dict: {"geometry": [...], "distance_m": int, "polyline": str}
                         if not r or not r.get("geometry"):
@@ -237,7 +289,24 @@ with TAB1:
 
                         route_dict = {**r, "poi": p, "distance_m": int(dist_m)}
                         rscore = score_route(route_dict, [])   # 第2引数は未使用
-                        routes.append({**route_dict, "score": int(rscore)})
+ 
+
+                        label = _poi_label_kind(p)
+                        one_way_min, cat = _dist_note(dist_m)
+                        k = (p.get("kind") or "").lower()
+                        if any(s in k for s in ["park", "garden", "green", "playground"]):
+                            env = "日陰・芝 期待◎"
+                        elif any(s in k for s in ["river", "water", "pond", "lake"]):
+                            env = "風通し◯"
+                        elif any(s in k for s in ["footway", "trail", "path"]):
+                            env = "車少なめ想定"
+                        else:
+                            env = "日陰少なめ想定"
+
+                        reason_rt = f"{label} / 片道{one_way_min}分（往復×2目安） / {cat} / {env}"
+
+                        routes.append({**route_dict, "score": int(rscore), "reason": reason_rt})
+
                         # ★ 追加：3件溜まったら打ち止め（余計なルーティングAPIを叩かない）
                         if len(routes) >= MAX_ROUTES:
                             break
@@ -247,13 +316,14 @@ with TAB1:
                     ss.routes = routes
                     ss.selected_route_idx = 0
                     ss.__just_recommended = True   # ★ このフラグを立てる
-
+                    ss.summary = f"半径{radius}mでPOI探索し、距離と種別で採点。上位{len(routes)}件を表示。"
 
             except Exception as e:
                 st.error(f"おすすめ計算中にエラー: {e}")
                 ss.wx = None
                 ss.windows = []
                 ss.routes = []
+   
 
     if go and (lat is not None) and (lon is not None):
         add_location(
@@ -282,16 +352,19 @@ with TAB1:
             key="route_select",       
         )
         selected_idx = labels.index(sel)
-        ss.selected_route_idx = selected_idx
+        st.caption(ss.get("summary", ""))  # どちらか1つでOK
 
+        ss.selected_route_idx = selected_idx
         tabs = st.tabs([f"候補{i+1}" for i in range(len(routes))])
         for i, t in enumerate(tabs):
             with t:
                 r = routes[i]
                 st.markdown(f"**{_poi_display_name(r['poi'])}** / スコア: {r['score']}")
+                st.markdown(f"**理由:** {r.get('reason', '—')}")
+
                 if latlon:
                     gmaps_url = f"https://www.google.com/maps/dir/?api=1&origin={latlon[0]},{latlon[1]}&destination={r['poi']['lat']},{r['poi']['lon']}&travelmode=walking"
-                    st.link_button("Googleマップでナビ", gmaps_url, use_container_width=True)
+                    st.link_button("Googleマップでナビ", gmaps_url,width="stretch")
                 if st.button("このルートをプランに保存", key=f"save_plan_{i}"):
                     plan_id = db.save_plan(
                         origin_lat=latlon[0], origin_lon=latlon[1],
@@ -349,7 +422,8 @@ with TAB1:
 
     # --- ここから：当日／翌日の時間帯テーブル ---
 
-    if ss.get("wx"):
+    if (not use_langchain) and ss.get("wx"):
+
         wx = ss.wx
         if not wx:
             st.info("時間帯テーブルを表示できる天気データがありません。")
@@ -433,7 +507,7 @@ with TAB1:
             rows_today_view = [dict(r) for r in (rows_today or [])]
             if rows_today_view:
                 rows_today_view[0]["時間帯"] = "◎ " + rows_today[0]["時間帯"]
-                st.dataframe(rows_today_view, use_container_width=True)
+                st.dataframe(rows_today_view, width="stretch")
             else:
                 st.info("当日に安全な時間帯は見つかりませんでした。")
 
@@ -442,7 +516,7 @@ with TAB1:
             rows_tomorrow_view = [dict(r) for r in (rows_tomorrow or [])]   # ★ コピー
             if rows_tomorrow_view:
                 rows_tomorrow_view[0]["時間帯"] = "◎ " + rows_tomorrow[0]["時間帯"]
-                st.dataframe(rows_tomorrow_view, use_container_width=True)
+                st.dataframe(rows_tomorrow_view,width="stretch")
             else:
                 st.info("翌日に安全な時間帯は見つかりませんでした。")
 
@@ -468,7 +542,7 @@ with TAB1:
                     routes=ss.routes,
                     model_version="timewin_v1.2"
                 )
-    else:
+    elif (not use_langchain):
         st.info("まずは『おすすめ開始』で天気とルートを取得してください。")
 
 

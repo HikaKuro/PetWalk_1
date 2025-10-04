@@ -34,7 +34,9 @@ Thumbs.db
 
 # --- 実行時データ（DB/一時ファイル） ---
 *.db
-*.db-*
+*.db-shm
+*.db-wal
+"@ | Add-Content .gitignore
 *.sqlite*
 /mount/data/
 /mount/tmp/
@@ -56,3 +58,4 @@ logs/
 
 # --- Jupyter ---
 .ipynb_checkpoints/
+git rm --cached petwalk_mvp.db-shm petwalk_mvp.db-wal
